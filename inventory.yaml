@@ -1,0 +1,8 @@
+---
+all:
+  hosts:
+    esxi-test03:
+      ansible_host: 192.xxx.xxx.xxx
+  vars:
+    ansible_user: root
+    ansible_password: secret
