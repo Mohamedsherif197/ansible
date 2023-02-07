@@ -1,0 +1,85 @@
+---
+- name: Sample Playbook for cloning a vm  on ESXi only environment without vCenter
+  hosts: all
+  gather_facts: false
+  vars:
+    clone_vms:  # is new vm list for you want
+      - name: clone_vm01
+        disk_type: thin
+    datastore_name: VM3  # is datastore name to be deployed of VM
+    template: test_vm2  # is template vm name from you want to use
+  tasks:
+    - name: Enable SSH Service of ESXi host
+      community.vmware.vmware_host_service_manager:
+        hostname: "{{ ansible_host }}"
+        username: "{{ ansible_user }}"
+        password: "{{ ansible_password }}"
+        validate_certs: false
+        esxi_hostname: "{{ inventory_hostname }}"
+        service_name: TSM-SSH
+        state: present
+      delegate_to: localhost
+
+    - name: Gather datastores information
+      community.vmware.vmware_datastore_info:
+        hostname: "{{ ansible_host }}"
+        username: "{{ ansible_user }}"
+        password: "{{ ansible_password }}"
+        validate_certs: false
+        datacenter: ha-datacenter
+      delegate_to: localhost
+      register: datastore_result
+
+    - name: Set datastore_path variable
+      set_fact:
+        datastore_path: "{{ item.url }}"
+      loop: "{{ datastore_result.datastores }}"
+      when:
+        - item.name == datastore_name
+
+    - when:
+        - datastore_path is defined
+      block:
+        - name: Create a directory to store virtual machines
+          file:
+            path: "{{ datastore_path }}/{{ item.name }}"
+            mode: 0755
+            state: directory
+          loop: "{{ clone_vms }}"
+
+        - name: Copy vmdk file(Multiple file support)
+          shell: >-
+                 for vmdk in $(find {{ datastore_path }}/{{ template }} -name "*.vmdk" | grep -v flat | awk -F / '{print $(NF)}') ; do
+                     rename_vmdk=`echo $vmdk | sed -e "s/{{ template }}\(.*\)/{{ item.name }}\1/g"`
+                     vmkfstools -i {{ datastore_path }}/{{ template }}/$vmdk -d {{ item.disk_type }} {{ datastore_path }}/{{ item.name }}/$rename_vmdk
+                 done
+          loop: "{{ clone_vms }}"
+
+        - name: Copy vmx file
+          copy:
+            src: "{{ datastore_path }}/{{ template }}/{{ template }}.vmx"
+            dest: "{{ datastore_path }}/{{ item.name }}/{{ item.name }}.vmx"
+            mode: 0644
+            remote_src: true
+          loop: "{{ clone_vms }}"
+
+        - name: Replace vmx file parameter
+          replace:
+            path: "{{ datastore_path }}/{{ item.name }}/{{ item.name }}.vmx"
+            regexp: "{{ template }}(\\.vmdk|\\.nvram|\"$)"
+            replace: "{{ item.name }}\\1"
+          loop: "{{ clone_vms }}"
+
+        - name: Register VM to inventory
+          community.vmware.vmware_guest_register_operation:
+            hostname: "{{ ansible_host }}"
+            username: "{{ ansible_user }}"
+            password: "{{ ansible_password }}"
+            validate_certs: false
+            folder: '/vm'
+            esxi_hostname: "{{ inventory_hostname }}"
+            name: "{{ item.name }}"
+            path: "[{{ datastore_name }}] {{ item.name }}/{{ item.name }}.vmx"
+            state: present
+          delegate_to: localhost
+          loop: "{{ clone_vms }}"
